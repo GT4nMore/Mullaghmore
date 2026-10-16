@@ -1,9 +1,10 @@
 """Convert mp_mullaghmore.map (+ prefabs, models, textures) into a web-ready .glb.
 
-    python build.py
+    python build.py [MAP_NAME GLB_NAME OUT_DIR]
+    python build.py mp_prison prison ../../Prison/docs
 
-Output (in ../docs):
-    mullaghmore.glb   world geometry merged per material, models as GPU instances
+Defaults to mp_mullaghmore -> ../docs/mullaghmore.glb. Output:
+    GLB_NAME.glb      world geometry merged per material, models as GPU instances
     sky/0..5.webp     sky cubemap faces
     spawn.json        camera start points
 """
@@ -27,8 +28,6 @@ import xmodel
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 
 GAME = r'C:/Program Files (x86)/Steam/steamapps/common/Call of Duty 4 NEW!'
-MAP = GAME + '/map_source/mp_mullaghmore.map'
-MAP_IWD = GAME + '/usermaps/mp_mullaghmore/mp_mullaghmore.iwd'
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'docs')
 
 MAX_TEX = 1024
@@ -376,10 +375,15 @@ def make_material(glb, bank, mat):
 
 # --- main ------------------------------------------------------------------
 
-def main():
+def main(map_name='mp_mullaghmore', glb_name='mullaghmore', out_dir=None):
+    global OUT
+    if out_dir:
+        OUT = os.path.abspath(out_dir)
     t0 = time.time()
     os.makedirs(OUT, exist_ok=True)
-    db = assets.AssetDB(GAME, [MAP_IWD])
+    MAP = f'{GAME}/map_source/{map_name}.map'
+    map_iwd = f'{GAME}/usermaps/{map_name}/{map_name}.iwd'
+    db = assets.AssetDB(GAME, [map_iwd] if os.path.exists(map_iwd) else [])
     bank = TextureBank(db)
     glb = GLB()
     scene = mapparse.load_map(MAP)
@@ -501,11 +505,12 @@ def main():
         }}}})
     print(f'models: {len(by_model)} unique, {inst_tris} instanced tris')
 
-    out_glb = os.path.join(OUT, 'mullaghmore.glb')
+    out_glb = os.path.join(OUT, glb_name + '.glb')
     glb.write(out_glb)
     print(f'glb: {os.path.getsize(out_glb) / 1e6:.1f} MB, {len(glb.gltf["images"])} textures')
 
-    write_sky(db)
+    sky = next((db.material(n) for n in mat_info if db.material(n).techset == 'sky'), None)
+    write_sky(db, sky.color_map if sky else None)
     write_spawns(scene)
     print(f'done in {time.time() - t0:.1f}s')
 
@@ -528,16 +533,24 @@ def mat_to_quat(m):
     return q / np.linalg.norm(q)
 
 
-def write_sky(db):
+def write_sky(db, image):
     sky_dir = os.path.join(OUT, 'sky')
     os.makedirs(sky_dir, exist_ok=True)
-    d = db.image_bytes('cobra_ft')
+    d = db.image_bytes(image) if image else None
+    if d is None:
+        print('no sky material found, using cobra_ft')
+        d = db.image_bytes('cobra_ft')
+    print('sky:', image)
+    fmt = d[4]
     w = struct.unpack_from('<H', d, 6)[0]
-    fs = w * w // 2
+    # cubemap: six full-size faces (+X -X +Y -Y +Z -Z) at the end of the file
+    fs = {assets.FMT_DXT1: w * w // 2, assets.FMT_DXT3: w * w, assets.FMT_DXT5: w * w,
+          assets.FMT_ARGB32: w * w * 4, assets.FMT_RGB24: w * w * 3}[fmt]
+    base = len(d) - 6 * fs
     for i in range(6):
-        face = d[28 + i * fs:28 + (i + 1) * fs]
-        img = Image.open(io.BytesIO(assets._dds(b'DXT1', w, w, face)))
-        img.load()
+        face = d[:28] + d[base + i * fs:base + (i + 1) * fs]
+        face = face[:6] + struct.pack('<HH', w, w) + face[10:]
+        img = assets.decode_iwi(face)
         img.convert('RGB').save(os.path.join(sky_dir, f'{i}.webp'), 'WEBP', quality=85)
 
 
@@ -554,4 +567,4 @@ def write_spawns(scene):
 
 
 if __name__ == '__main__':
-    main()
+    main(*sys.argv[1:4])

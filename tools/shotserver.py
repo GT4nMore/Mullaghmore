@@ -11,7 +11,7 @@ import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SITE = os.path.join(HERE, '..', 'docs')
+SITE = os.environ.get('SHOT_SITE', os.path.join(HERE, '..', 'docs'))
 WORK = os.path.join(HERE, '..', 'work')
 CHROME = r'C:/Program Files/Google/Chrome/Application/chrome.exe'
 
