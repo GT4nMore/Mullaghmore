@@ -138,8 +138,9 @@ def brush_face_uv(points, normal, tex, img_size):
     s, t = texture_axes(normal, rot)
     size_x = size_x or 64.0
     size_y = size_y or 64.0
-    u = (points @ s + off_x) / size_x
-    v = (points @ t + off_y) / size_y
+    # offsets are in world units and subtracted: a face fitted in Radiant spans exactly one repeat
+    u = (points @ s - off_x) / size_x
+    v = (points @ t - off_y) / size_y
     return np.stack([u, v], axis=1)
 
 
