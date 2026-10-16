@@ -23,6 +23,12 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         name = self.path.split('name=')[-1]
         data = self.rfile.read(int(self.headers['Content-Length']))
+        if self.path.startswith('/probe'):
+            with open(os.path.join(WORK, 'probe.txt'), 'wb') as f:
+                f.write(data)
+            self.send_response(200)
+            self.end_headers()
+            return
         png = base64.b64decode(data.split(b',', 1)[1])
         with open(os.path.join(WORK, name + '.png'), 'wb') as f:
             f.write(png)

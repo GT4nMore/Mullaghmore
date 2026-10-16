@@ -51,7 +51,7 @@ class Patch:
     def __init__(self, kind, material, rows):
         self.kind = kind          # 'mesh' or 'curve'
         self.material = material
-        self.rows = rows          # list of rows, each a list of (xyz, uv-in-texels)
+        self.rows = rows          # list of rows, each a list of (xyz, uv-in-texels, alpha)
 
 
 def tokenize_blocks(lines):
@@ -120,7 +120,9 @@ def parse_patch(prim):
             xyz = (float(t[1]), float(t[2]), float(t[3]))
             ti = t.index('t')
             uv = (float(t[ti + 1]), float(t[ti + 2]))
-            cur.append((xyz, uv))
+            # optional "c r g b a": decals fade out with the alpha painted in Radiant
+            alpha = float(t[t.index('c') + 4]) / 255.0 if 'c' in t else 1.0
+            cur.append((xyz, uv, alpha))
     return Patch(kind, material, rows)
 
 

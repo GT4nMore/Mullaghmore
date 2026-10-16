@@ -110,6 +110,32 @@
     fetch('spawn.json').then(r => r.json()).then(s => { if (s.length) spawns = s; }).catch(() => {});
 
     const maxAniso = renderer.capabilities.getMaxAnisotropy();
+    // Large ground textures repeat visibly without CoD's lightmaps, so vary their
+    // brightness with low-frequency world-space noise to break up the pattern.
+    const GROUND = /grass|ground|dirt|mud|gravel|sand|terrain|asphalt|cliff|rock|concrete_floor|road/i;
+    function breakUpTiling(m) {
+      m.onBeforeCompile = (sh) => {
+        sh.vertexShader = `varying vec3 vWorldPos;
+` + sh.vertexShader.replace('#include <project_vertex>',
+          `#include <project_vertex>
+          vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
+        sh.fragmentShader = `varying vec3 vWorldPos;
+          float vnHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float vnoise(vec2 p) {
+            vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(vnHash(i), vnHash(i + vec2(1, 0)), f.x), mix(vnHash(i + vec2(0, 1)), vnHash(i + vec2(1, 1)), f.x), f.y);
+          }
+          ` + sh.fragmentShader.replace('#include <map_fragment>', `
+          // blend the texture with a rotated, rescaled copy of itself so repeats don't line up
+          vec2 uv2 = mat2(0.8, -0.6, 0.6, 0.8) * vMapUv * 0.37 + 0.13;
+          float pick = smoothstep(0.3, 0.7, vnoise(vWorldPos.xz / 14.0));
+          diffuseColor *= mix(texture2D(map, vMapUv), texture2D(map, uv2), pick);
+          float macro = vnoise(vWorldPos.xz / 38.0) * 0.6 + vnoise(vWorldPos.xz / 9.0) * 0.4;
+          diffuseColor.rgb *= mix(0.8, 1.12, macro);`);
+      };
+      m.customProgramCacheKey = () => 'breakUpTiling';
+    }
+
     function convertMaterial(src, instanced) {
       const x = src.userData || {};
       const opts = { map: src.map, side: THREE.DoubleSide, vertexColors: !!src.vertexColors, name: src.name };
@@ -122,6 +148,7 @@
       }
       if (x.unlit) m = new THREE.MeshBasicMaterial(opts);
       else m = new THREE.MeshLambertMaterial(opts);
+      if (!instanced && GROUND.test(src.name)) breakUpTiling(m);
       if (src.alphaTest > 0) { m.alphaTest = 0.5; m.alphaToCoverage = true; }
       if (src.transparent) {
         m.transparent = true;
@@ -131,8 +158,16 @@
         if (x.decal) { m.polygonOffset = true; m.polygonOffsetFactor = -2; m.polygonOffsetUnits = -2; }
         if (x.additive) m.blending = THREE.AdditiveBlending;
         if (x.multiply) {
-          m.blending = THREE.CustomBlending;
-          m.blendSrc = THREE.DstColorFactor; m.blendDst = THREE.ZeroFactor;
+          // Multiply decals (soot, stains) darken what's under them. Draw them as black with
+          // alpha = (1 - brightness) * vertex alpha: the same result as multiplying by a grey
+          // texture, and faded-out vertices are guaranteed to leave the ground untouched.
+          m.fog = false;
+          m.onBeforeCompile = (sh) => {
+            sh.fragmentShader = sh.fragmentShader.replace('#include <opaque_fragment>',
+              `float dk = 1.0 - dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+              gl_FragColor = vec4(0.0, 0.0, 0.0, dk * diffuseColor.a);`);
+          };
+          m.customProgramCacheKey = () => 'multiplyDecal';
         }
       }
       return m;

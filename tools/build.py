@@ -153,16 +153,17 @@ def bezier3(p0, p1, p2, t):
 
 
 def patch_grid(patch):
-    """Return (pos grid (R,C,3), uv grid (R,C,2) in texels)."""
+    """Return (pos grid (R,C,3), uv grid (R,C,2) in texels, alpha grid (R,C,1))."""
     rows = patch.rows
     P = np.array([[v[0] for v in r] for r in rows], float)
     T = np.array([[v[1] for v in r] for r in rows], float)
+    A = np.array([[[v[2]] for v in r] for r in rows], float)
     if patch.kind == 'mesh':
-        return P, T
+        return P, T, A
     # curve: quadratic bezier control grid with odd dimensions
     R, C = P.shape[:2]
     if R < 3 or C < 3 or R % 2 == 0 or C % 2 == 0:
-        return P, T
+        return P, T, A
     steps = CURVE_STEPS
     t = np.linspace(0, 1, steps + 1)
     out_rows = []
@@ -180,10 +181,10 @@ def patch_grid(patch):
             seg = bezier3(H[r0][None], H[r0 + 1][None], H[r0 + 2][None], t[:, None])
             rws.append(seg if r0 == 0 else seg[1:])
         return np.concatenate(rws, axis=0)
-    return tess(P), tess(T)
+    return tess(P), tess(T), tess(A)
 
 
-def grid_mesh(P, UV):
+def grid_mesh(P, UV, A):
     R, C = P.shape[:2]
     idx = []
     for r in range(R - 1):
@@ -195,7 +196,7 @@ def grid_mesh(P, UV):
     pos = P.reshape(-1, 3)
     uv = UV.reshape(-1, 2)
     nrm = vertex_normals(pos, idx)
-    return pos, nrm, uv, idx
+    return pos, nrm, uv, A.reshape(-1), idx
 
 
 def vertex_normals(pos, idx):
@@ -389,13 +390,14 @@ def main(map_name='mp_mullaghmore', glb_name='mullaghmore', out_dir=None):
     scene = mapparse.load_map(MAP)
     print(f'map: {len(scene.brushes)} brushes, {len(scene.patches)} patches, {len(scene.models)} models')
 
-    world = defaultdict(lambda: {'pos': [], 'nrm': [], 'uv': [], 'idx': [], 'n': 0})
+    world = defaultdict(lambda: {'pos': [], 'nrm': [], 'uv': [], 'alpha': [], 'idx': [], 'n': 0})
 
-    def add(mat_name, pos, nrm, uv, idx):
+    def add(mat_name, pos, nrm, uv, idx, alpha=None):
         w = world[mat_name]
         w['pos'].append(pos)
         w['nrm'].append(nrm)
         w['uv'].append(uv)
+        w['alpha'].append(np.ones(len(pos)) if alpha is None else alpha)
         w['idx'].append(idx + w['n'])
         w['n'] += len(pos)
 
@@ -426,11 +428,11 @@ def main(map_name='mp_mullaghmore', glb_name='mullaghmore', out_dir=None):
         mi, size = resolve(patch.material)
         if mi is None or len(patch.rows) < 2 or len(patch.rows[0]) < 2:
             continue
-        P, T = patch_grid(patch)
+        P, T, A = patch_grid(patch)
         P = P @ xf[:3, :3].T + xf[:3, 3]
-        pos, nrm, uv, idx = grid_mesh(P, T)
+        pos, nrm, uv, alpha, idx = grid_mesh(P, T, A)
         uv = uv / np.array(size, float)
-        add(patch.material, pos, nrm, uv, idx)
+        add(patch.material, pos, nrm, uv, idx, alpha)
     print(f'patches done {time.time() - t0:.1f}s')
 
     # world meshes, one primitive per material
@@ -443,12 +445,18 @@ def main(map_name='mp_mullaghmore', glb_name='mullaghmore', out_dir=None):
         uv = np.concatenate(w['uv']).astype(np.float32)
         idx = np.concatenate(w['idx']).astype(np.uint32).reshape(-1)
         tri_total += len(idx) // 3
+        attrs = {
+            'POSITION': glb.accessor(pos, 'VEC3', target=34962, minmax=True),
+            'NORMAL': glb.normals(nrm),
+            'TEXCOORD_0': glb.accessor(uv, 'VEC2', target=34962),
+        }
+        alpha = np.clip(np.concatenate(w['alpha']), 0, 1)
+        if (alpha < 0.999).any() and glb.gltf['materials'][mi].get('alphaMode') in ('BLEND', 'MASK'):
+            col = np.full((len(alpha), 4), 255, np.uint8)
+            col[:, 3] = np.round(alpha * 255)
+            attrs['COLOR_0'] = glb.accessor(col, 'VEC4', normalized=True, target=34962)
         prims.append({
-            'attributes': {
-                'POSITION': glb.accessor(pos, 'VEC3', target=34962, minmax=True),
-                'NORMAL': glb.normals(nrm),
-                'TEXCOORD_0': glb.accessor(uv, 'VEC2', target=34962),
-            },
+            'attributes': attrs,
             'indices': glb.accessor(idx.astype(np.uint16) if pos.shape[0] < 65536 else idx, 'SCALAR', target=34963),
             'material': mi,
         })
