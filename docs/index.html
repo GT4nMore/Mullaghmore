@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Mullaghmore</title>
+  <meta name="description" content="Fly through mp_mullaghmore, a Call of Duty 4 custom map by Oisín Mc Gloin.">
+  <link rel="icon" href="data:,">
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0d1014; }
+    body { font-family: "Courier New", monospace; color: #e8ecf1; }
+    canvas { display: block; touch-action: none; }
+    #loader { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: #171717; z-index: 5; padding: 0 16px; text-align: center; }
+    #loader h1 { margin: 0; font-size: 32px; font-weight: normal; color: #509e29; }
+    #loader .sub { color: #878787; font-size: 14px; }
+    #bar { width: min(360px, 80vw); height: 3px; background: rgba(255,255,255,0.12); }
+    #fill { width: 0; height: 100%; background: #298b9e; transition: width 0.15s; }
+    #status { font-size: 13px; color: #878787; }
+    #error { color: #ff8a80; max-width: 520px; display: none; }
+    #help { position: fixed; left: 16px; bottom: 16px; font-size: 13px; line-height: 1.6; background: rgba(23,23,23,0.78); padding: 12px 14px; max-width: calc(100vw - 60px); }
+    #help .k { color: #298b9e; }
+    #help .s { color: #509e29; }
+    #help.hidden { display: none; }
+    #start { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 4; cursor: pointer; }
+    #start div { background: rgba(23,23,23,0.85); padding: 18px 24px; font-size: 16px; color: #fff; }
+    #cross { position: fixed; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; background: rgba(255,255,255,0.8); border-radius: 50%; pointer-events: none; display: none; }
+    #hud { position: fixed; right: 16px; top: 16px; font-size: 12px; color: #c8ced6; background: rgba(23,23,23,0.6); padding: 6px 10px; text-align: right; }
+    #hud a { color: #c8ced6; }
+    body.shot #help, body.shot #hud, body.shot #cross, body.shot #start { display: none !important; }
+    @media (max-width: 600px) { #help { font-size: 11px; } }
+  </style>
+  <script type="importmap">
+    { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    } }
+  </script>
+</head>
+<body>
+  <div id="loader">
+    <h1>.Mullaghmore {</h1>
+    <div class="sub">/* Call of Duty 4 custom map &middot; noclip fly-through */</div>
+    <div id="bar"><div id="fill"></div></div>
+    <div id="status">Loading map&hellip;</div>
+    <div id="error"></div>
+  </div>
+  <div id="start"><div>Click to fly</div></div>
+  <div id="cross"></div>
+  <div id="hud"><a href="/">oisinmg.ie</a> &middot; <span id="speed"></span></div>
+  <div id="help">
+    <div class="s">.Controls {</div>
+    <div><span class="k">Mouse</span> look &middot; <span class="k">W A S D</span> fly</div>
+    <div><span class="k">Space</span> / <span class="k">C</span> up / down &middot; <span class="k">Shift</span> fast</div>
+    <div><span class="k">Scroll</span> change speed &middot; <span class="k">R</span> respawn</div>
+    <div><span class="k">H</span> hide this &middot; <span class="k">Esc</span> release mouse</div>
+    <div class="s">}</div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+    const params = new URLSearchParams(location.search);
+    if (params.has('shot')) document.body.classList.add('shot');
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: params.has('shot') });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.prepend(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const fogColor = new THREE.Color(0xb9c7d3);
+    scene.fog = new THREE.Fog(fogColor, 250, 1400);
+    const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.05, 4000);
+    camera.rotation.order = 'YXZ';
+
+    // Sun from the map's worldspawn: sundirection "282.4 123.9 0", suncolor "1 .8 .6"
+    const codDir = (pitch, yaw) => {
+      const p = THREE.MathUtils.degToRad(pitch), y = THREE.MathUtils.degToRad(yaw);
+      const x = Math.cos(p) * Math.cos(y), cy = Math.cos(p) * Math.sin(y), z = -Math.sin(p);
+      return new THREE.Vector3(x, z, -cy);              // CoD (x, y, z) -> three (x, z, -y)
+    };
+    scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x6b6250, 1.6));
+    const sun = new THREE.DirectionalLight(0xfff0dc, 2.2);
+    sun.position.copy(codDir(282.4, 123.9));
+    scene.add(sun);
+
+    // Sky: CoD cubemap sampled with CoD axes so it lines up exactly as in game
+    const skyTex = new THREE.CubeTextureLoader().setPath('sky/').load(['0.webp', '1.webp', '2.webp', '3.webp', '4.webp', '5.webp']);
+    skyTex.colorSpace = THREE.SRGBColorSpace;
+    const sky = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.ShaderMaterial({
+      uniforms: { sky: { value: skyTex } },
+      vertexShader: `varying vec3 vDir;
+        void main() { vDir = position; vec4 p = projectionMatrix * mat4(mat3(viewMatrix)) * vec4(position, 1.0); gl_Position = vec4(p.xy, p.w * 0.99999, p.w); }`,
+      fragmentShader: `uniform samplerCube sky; varying vec3 vDir;
+        void main() { vec3 d = normalize(vDir); gl_FragColor = textureCube(sky, vec3(d.x, -d.z, d.y));
+          #include <colorspace_fragment>
+        }`,
+      side: THREE.BackSide, depthWrite: false,
+    }));
+    sky.frustumCulled = false;
+    sky.renderOrder = -1;
+    scene.add(sky);
+
+    // --- load the map ---
+    const fill = document.getElementById('fill'), status = document.getElementById('status');
+    const fail = (msg) => { const e = document.getElementById('error'); e.textContent = msg; e.style.display = 'block'; status.style.display = 'none'; };
+    let spawns = [{ pos: [0, 5, 0], yaw: 0 }];
+    fetch('spawn.json').then(r => r.json()).then(s => { if (s.length) spawns = s; }).catch(() => {});
+
+    const maxAniso = renderer.capabilities.getMaxAnisotropy();
+    function convertMaterial(src, instanced) {
+      const x = src.userData || {};
+      const opts = { map: src.map, side: THREE.DoubleSide, vertexColors: !!src.vertexColors, name: src.name };
+      if (src.map) src.map.anisotropy = Math.min(8, maxAniso);
+      let m;
+      if ((x.techset || '').startsWith('water')) {
+        // CoD water is a special shader; its colour map is only a placeholder grid
+        return new THREE.MeshPhongMaterial({ color: 0x2c5563, specular: 0x9fb8c4, shininess: 60,
+          transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide });
+      }
+      if (x.unlit) m = new THREE.MeshBasicMaterial(opts);
+      else m = new THREE.MeshLambertMaterial(opts);
+      if (src.alphaTest > 0) { m.alphaTest = 0.5; m.alphaToCoverage = true; }
+      if (src.transparent) {
+        m.transparent = true;
+        m.depthWrite = false;
+        m.opacity = src.opacity;
+        if (src.color) m.color.copy(src.color);
+        if (x.decal) { m.polygonOffset = true; m.polygonOffsetFactor = -2; m.polygonOffsetUnits = -2; }
+        if (x.additive) m.blending = THREE.AdditiveBlending;
+        if (x.multiply) {
+          m.blending = THREE.CustomBlending;
+          m.blendSrc = THREE.DstColorFactor; m.blendDst = THREE.ZeroFactor;
+        }
+      }
+      return m;
+    }
+
+    const loader = new GLTFLoader();
+    loader.load('mullaghmore.glb', (gltf) => {
+      gltf.scene.traverse((o) => {
+        if (!o.isMesh) return;
+        o.material = convertMaterial(o.material, o.isInstancedMesh);
+        o.matrixAutoUpdate = false;
+        o.updateMatrix();
+      });
+      scene.add(gltf.scene);
+      document.getElementById('loader').remove();
+      respawn();
+      if (!params.has('shot')) showStart();
+      ready = true;
+      if (params.has('shot')) setTimeout(() => {
+        renderer.render(scene, camera);
+        fetch('/shot?name=' + params.get('shot'), { method: 'POST', body: renderer.domElement.toDataURL('image/png') });
+      }, 2500);
+    }, (e) => {
+      const total = e.total || 42e6;
+      fill.style.width = Math.min(100, e.loaded / total * 100) + '%';
+      status.textContent = `Loading map… ${(e.loaded / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(0)} MB`;
+    }, (err) => fail('Could not load the map: ' + (err.message || err)));
+
+    // --- noclip controls ---
+    let yaw = 0, pitch = 0, speed = 12, ready = false;
+    const keys = new Set();
+    const speedEl = document.getElementById('speed');
+    const showSpeed = () => speedEl.textContent = `speed ${speed.toFixed(0)} m/s`;
+    showSpeed();
+
+    function respawn() {
+      const cam = params.get('cam');
+      if (cam) {
+        const [x, y, z, yw, pt] = cam.split(',').map(Number);
+        camera.position.set(x, y, z); yaw = yw || 0; pitch = pt || 0;
+      } else {
+        const s = spawns[0];
+        camera.position.fromArray(s.pos);
+        yaw = THREE.MathUtils.degToRad(s.yaw - 90); pitch = -0.1;
+      }
+    }
+
+    const startEl = document.getElementById('start'), cross = document.getElementById('cross');
+    const isTouch = matchMedia('(pointer: coarse)').matches;
+    function showStart() { if (!isTouch) startEl.style.display = 'flex'; }
+    startEl.addEventListener('click', () => renderer.domElement.requestPointerLock());
+    document.addEventListener('pointerlockchange', () => {
+      const locked = document.pointerLockElement === renderer.domElement;
+      startEl.style.display = locked || !ready ? 'none' : 'flex';
+      cross.style.display = locked ? 'block' : 'none';
+      if (!locked) keys.clear();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (document.pointerLockElement !== renderer.domElement) return;
+      yaw -= e.movementX * 0.0022;
+      pitch = THREE.MathUtils.clamp(pitch - e.movementY * 0.0022, -1.55, 1.55);
+    });
+    addEventListener('keydown', (e) => {
+      if (e.code === 'KeyH') document.getElementById('help').classList.toggle('hidden');
+      if (e.code === 'KeyR') respawn();
+      keys.add(e.code);
+      if (['Space', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
+    });
+    addEventListener('keyup', (e) => keys.delete(e.code));
+    addEventListener('blur', () => keys.clear());
+    addEventListener('wheel', (e) => {
+      speed = THREE.MathUtils.clamp(speed * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 1, 200);
+      showSpeed();
+    }, { passive: true });
+
+    // touch: left half drags to move, right half drags to look
+    const touches = new Map();
+    const move = { x: 0, y: 0 };
+    renderer.domElement.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch') return;
+      touches.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, left: e.clientX < innerWidth / 2 });
+    });
+    renderer.domElement.addEventListener('pointermove', (e) => {
+      const t = touches.get(e.pointerId);
+      if (!t) return;
+      if (t.left) {
+        move.x = THREE.MathUtils.clamp((e.clientX - t.sx) / 60, -1, 1);
+        move.y = THREE.MathUtils.clamp((e.clientY - t.sy) / 60, -1, 1);
+      } else {
+        yaw -= (e.clientX - t.x) * 0.005;
+        pitch = THREE.MathUtils.clamp(pitch - (e.clientY - t.y) * 0.005, -1.55, 1.55);
+      }
+      t.x = e.clientX; t.y = e.clientY;
+    });
+    const endTouch = (e) => { const t = touches.get(e.pointerId); if (t && t.left) { move.x = 0; move.y = 0; } touches.delete(e.pointerId); };
+    renderer.domElement.addEventListener('pointerup', endTouch);
+    renderer.domElement.addEventListener('pointercancel', endTouch);
+
+    const fwd = new THREE.Vector3(), right = new THREE.Vector3(), vel = new THREE.Vector3(), want = new THREE.Vector3();
+    const clock = new THREE.Clock();
+    function tick() {
+      const dt = Math.min(clock.getDelta(), 0.1);
+      camera.rotation.set(pitch, yaw, 0);
+      camera.getWorldDirection(fwd);
+      right.crossVectors(fwd, camera.up).normalize();
+      want.set(0, 0, 0);
+      if (keys.has('KeyW') || keys.has('ArrowUp')) want.add(fwd);
+      if (keys.has('KeyS') || keys.has('ArrowDown')) want.sub(fwd);
+      if (keys.has('KeyD') || keys.has('ArrowRight')) want.add(right);
+      if (keys.has('KeyA') || keys.has('ArrowLeft')) want.sub(right);
+      if (keys.has('Space') || keys.has('KeyE')) want.y += 1;
+      if (keys.has('KeyC') || keys.has('ControlLeft') || keys.has('KeyQ')) want.y -= 1;
+      want.addScaledVector(fwd, -move.y).addScaledVector(right, move.x);
+      if (want.lengthSq() > 1) want.normalize();
+      const boost = keys.has('ShiftLeft') || keys.has('ShiftRight') ? 4 : 1;
+      want.multiplyScalar(speed * boost);
+      vel.lerp(want, 1 - Math.exp(-dt * 10));
+      camera.position.addScaledVector(vel, dt);
+      sky.position.copy(camera.position);
+      renderer.render(scene, camera);
+      requestAnimationFrame(tick);
+    }
+    tick();
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+    window.__ready = () => ready;
+  </script>
+</body>
+</html>
